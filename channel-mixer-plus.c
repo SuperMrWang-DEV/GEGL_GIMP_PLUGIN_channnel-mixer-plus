@@ -14,6 +14,7 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  *
  * Modified from official GEGL channel-mixer, add RGB offset, remove preserve luminosity
+ * Add PS-like Monochrome single-channel grayscale mode
  */
 
 #include "config.h"
@@ -21,7 +22,28 @@
 
 #ifdef GEGL_PROPERTIES
 
-/* Red output channel */
+/* New: PS Monochrome toggle */
+property_boolean (monochrome, _("Monochrome"), FALSE)
+  description(_("Produce grayscale monochrome image (PS style single channel mixer)"))
+
+/* Monochrome shared mixing coefficients (only used when monochrome=TRUE) */
+property_double (mono_r, _("Red"), 0.33)
+  description(_("Red channel contribution for monochrome output"))
+  value_range (-2.0, 2.0)
+
+property_double (mono_g, _("Green"), 0.33)
+  description(_("Green channel contribution for monochrome output"))
+  value_range (-2.0, 2.0)
+
+property_double (mono_b, _("Blue"), 0.34)
+  description(_("Blue channel contribution for monochrome output"))
+  value_range (-2.0, 2.0)
+
+property_double (mono_offset, _("Monochrome Offset"), 0.0)
+  description(_("Constant offset added to monochrome gray value"))
+  value_range (-1.0, 1.0)
+
+/* Red output channel (normal color mode only) */
 property_double (rr_gain, _("Red in Red channel"), 1.0)
   description(_("Set the red amount for the red channel"))
   value_range (-2.0, 2.0)
@@ -38,7 +60,7 @@ property_double (r_offset, _("Red Offset"), 0.0)
   description(_("Constant offset added to red output channel"))
   value_range (-1.0, 1.0)
 
-/* Green output channel */
+/* Green output channel (normal color mode only) */
 property_double (gr_gain, _("Red in Green channel"), 0.0)
   description(_("Set the red amount for the green channel"))
   value_range (-2.0, 2.0)
@@ -55,7 +77,7 @@ property_double (g_offset, _("Green Offset"), 0.0)
   description(_("Constant offset added to green output channel"))
   value_range (-1.0, 1.0)
 
-/* Blue output channel */
+/* Blue output channel (normal color mode only) */
 property_double (br_gain, _("Red in Blue channel"), 0.0)
   description(_("Set the red amount for the blue channel"))
   value_range (-2.0, 2.0)
@@ -94,6 +116,13 @@ typedef struct
   CmChannelType  green;
   CmChannelType  blue;
 
+  /* New monochrome params */
+  gboolean monochrome;
+  gdouble mono_r;
+  gdouble mono_g;
+  gdouble mono_b;
+  gdouble mono_offset;
+
   gboolean       has_alpha;
 } CmParamsType;
 
@@ -109,6 +138,14 @@ static void prepare (GeglOperation *operation)
 
   mix = (CmParamsType*) o->user_data;
 
+  /* Read monochrome config */
+  mix->monochrome = o->monochrome;
+  mix->mono_r     = o->mono_r;
+  mix->mono_g     = o->mono_g;
+  mix->mono_b     = o->mono_b;
+  mix->mono_offset= o->mono_offset;
+
+  /* Normal color channel gains & offsets */
   mix->red.red_gain     = o->rr_gain;
   mix->red.green_gain   = o->rg_gain;
   mix->red.blue_gain    = o->rb_gain;
@@ -164,14 +201,35 @@ cm_mix_pixel (CmChannelType *ch,
   return (gfloat) c;
 }
 
+/* New: calculate monochrome gray value */
+static inline gfloat
+cm_mono_gray (CmParamsType *mix, gfloat r, gfloat g, gfloat b)
+{
+  gdouble gray = mix->mono_r * r + mix->mono_g * g + mix->mono_b * b;
+  gray += mix->mono_offset;
+  return (gfloat) gray;
+}
+
 static inline void
 cm_process_pixel (CmParamsType  *mix,
                   const gfloat  *s,
                   gfloat        *d)
 {
-  d[0] = cm_mix_pixel (&mix->red,   s[0], s[1], s[2]);
-  d[1] = cm_mix_pixel (&mix->green, s[0], s[1], s[2]);
-  d[2] = cm_mix_pixel (&mix->blue,  s[0], s[1], s[2]);
+  if (mix->monochrome)
+    {
+      gfloat gray = cm_mono_gray (mix, s[0], s[1], s[2]);
+      /* R=G=B 实现单色灰度图 */
+      d[0] = gray;
+      d[1] = gray;
+      d[2] = gray;
+    }
+  else
+    {
+      /* Original color mixing logic */
+      d[0] = cm_mix_pixel (&mix->red,   s[0], s[1], s[2]);
+      d[1] = cm_mix_pixel (&mix->green, s[0], s[1], s[2]);
+      d[2] = cm_mix_pixel (&mix->blue,  s[0], s[1], s[2]);
+    }
 }
 
 static gboolean
@@ -229,7 +287,7 @@ gegl_op_class_init (GeglOpClass *klass)
   gegl_operation_class_set_keys (oc,
     "name",        "lb:channel-mixer-plus",
     "title",       _("Channel Mixer Plus"),
-    "description", _("Mix RGB channels with independent constant offsets, no luminosity preservation"),
+    "description", _("Mix RGB channels with independent offsets, PS-style monochrome grayscale mode, no luminosity preservation"),
     "gimp:menu-path", "<Image>/Colors/myfilters",
     "gimp:menu-label", _("Channel Mixer Plus..."),
     NULL);
